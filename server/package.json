@@ -1,0 +1,24 @@
+{
+    "name": "ar-cosmetics-backend",
+    "version": "1.0.0",
+    "description": "Backend API for AR Cosmetics Try-On",
+    "main": "server.js",
+    "type": "module",
+    "scripts": {
+        "start": "node server.js",
+        "dev": "node --watch server.js",
+        "seed": "node scripts/seedProducts.js"
+    },
+    "dependencies": {
+        "bcryptjs": "^3.0.3",
+        "cors": "^2.8.5",
+        "dotenv": "^16.4.5",
+        "express": "^4.18.2",
+        "jsonwebtoken": "^9.0.3",
+        "mongoose": "^8.2.0"
+    },
+    "devDependencies": {
+        "@types/cors": "^2.8.19",
+        "@types/express": "^5.0.6"
+    }
+}

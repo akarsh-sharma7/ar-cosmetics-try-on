@@ -1,0 +1,7 @@
+{
+  "name": "AR Cosmetics Try-On",
+  "description": "An interactive web application that uses your device's camera and advanced face mesh technology to let you virtually try on different shades of lipstick and blush in real-time.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
