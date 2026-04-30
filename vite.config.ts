@@ -11,6 +11,12 @@ export default defineConfig(({ mode }) => {
       // Fix COOP warnings for Firebase Auth popup
       headers: {
         'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
+      },
+      proxy: {
+        '/api': {
+          target: 'http://localhost:5001',
+          changeOrigin: true,
+        }
       }
     },
     plugins: [react()],
