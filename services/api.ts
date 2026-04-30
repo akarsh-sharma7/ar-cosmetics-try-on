@@ -1,4 +1,7 @@
-const API_URL = (import.meta as any).env?.VITE_API_URL || 'http://192.168.1.22:5001/api';
+const API_URL = (import.meta as any).env?.VITE_API_URL;
+if (!API_URL) {
+    console.error('VITE_API_URL is not set. Please configure it in your .env.local file or Vercel environment variables.');
+}
 // Get stored token
 const getToken = (): string | null => {
     return localStorage.getItem('authToken');
