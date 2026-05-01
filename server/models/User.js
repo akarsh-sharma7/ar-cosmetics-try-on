@@ -15,10 +15,17 @@ const userSchema = new mongoose.Schema({
         lowercase: true,
         trim: true
     },
+    // Optional — Google OAuth users don't have a local password
     password: {
         type: String,
-        required: true,
-        minlength: 6
+        minlength: 6,
+        select: false         // never returned by default
+    },
+    // Google OAuth user ID (sub claim)
+    googleId: {
+        type: String,
+        sparse: true,
+        index: true
     },
     displayName: {
         type: String,

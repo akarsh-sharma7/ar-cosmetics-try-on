@@ -62,10 +62,12 @@ export async function login(email: string, password: string): Promise<AuthRespon
         body: JSON.stringify({ email, password })
     });
 
-    const data = await response.json();
+    const text = await response.text();
+    let data: any = {};
+    try { data = text ? JSON.parse(text) : {}; } catch { /* ignore */ }
 
     if (!response.ok) {
-        throw new Error(data.error || 'Login failed');
+        throw new Error(data.error || `Login failed (${response.status})`);
     }
 
     setToken(data.token);
@@ -82,6 +84,26 @@ export async function logout(): Promise<void> {
     } finally {
         removeToken();
     }
+}
+
+// Sign in with Google credential token (from Google Identity Services)
+export async function loginWithGoogle(credential: string): Promise<AuthResponse> {
+    const response = await fetch(`${API_URL}/auth/google`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credential })
+    });
+
+    const text = await response.text();
+    let data: any = {};
+    try { data = text ? JSON.parse(text) : {}; } catch { /* ignore */ }
+
+    if (!response.ok) {
+        throw new Error(data.error || `Google sign-in failed (${response.status})`);
+    }
+
+    setToken(data.token);
+    return data;
 }
 
 // Get current user

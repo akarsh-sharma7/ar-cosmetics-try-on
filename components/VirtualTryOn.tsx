@@ -92,125 +92,144 @@ export const VirtualTryOn: React.FC<VirtualTryOnProps> = ({ isCameraOn, product,
     const lower = lowerIdx.map(idx => landmarks[idx]);
     if (!upper[0] || !lower[0]) return;
 
-    // 1. Spine Computation & Morphological Scaling
-    const spine = upper.map((up, i) => {
-      const low = lower[i];
-      return {
-        x: (up.x + low.x) / 2,
-        y: (up.y + low.y) / 2,
-        thickness: Math.sqrt(Math.pow(up.x - low.x, 2) + Math.pow(up.y - low.y, 2))
-      };
+    // ── Parse hex → RGB for alpha-aware drawing ──────────────────────────────
+    const r = parseInt(color.slice(1, 3), 16);
+    const g = parseInt(color.slice(3, 5), 16);
+    const b = parseInt(color.slice(5, 7), 16);
+
+    // ── Face scale (inter-eye distance) ──────────────────────────────────────
+    const eyeDist = Math.sqrt(
+      Math.pow(landmarks[33].x - landmarks[263].x, 2) +
+      Math.pow(landmarks[33].y - landmarks[263].y, 2)
+    );
+    const faceScale = eyeDist / 0.15;  // ~1.0 at normal camera distance
+
+    // ── Project landmarks to pixel coords ────────────────────────────────────
+    const toPixel = (p: any) => ({ x: p.x * canvas.width, y: p.y * canvas.height });
+    const upperPx = upper.map(toPixel);
+    const lowerPx = lower.map(toPixel);
+
+    // ── Brow bounding metrics ─────────────────────────────────────────────────
+    const nPts = upperPx.length;
+    // Spine = midpoint between upper and lower at each index
+    const spine = upperPx.map((u, i) => ({
+      x: (u.x + lowerPx[i].x) / 2,
+      y: (u.y + lowerPx[i].y) / 2,
+      // local brow height (pixels) at this point
+      h: Math.hypot(u.x - lowerPx[i].x, u.y - lowerPx[i].y),
+    }));
+
+    // Direction of brow arch at each spine point
+    const browDir = spine.map((p, i) => {
+      const prev = spine[Math.max(0, i - 1)];
+      const next = spine[Math.min(nPts - 1, i + 1)];
+      return Math.atan2(next.y - prev.y, next.x - prev.x);
     });
 
-    // Face scale adjustment (distance between eyes)
-    const eyeDist = Math.sqrt(Math.pow(landmarks[33].x - landmarks[263].x, 2) + Math.pow(landmarks[33].y - landmarks[263].y, 2));
-    const faceScale = eyeDist / 0.15;
+    const isRight = upperIdx[0] > 200;
 
     ctx.save();
-    
-    // 2. Layer 1: Diffused Soft Base (Feathered definition)
-    ctx.globalCompositeOperation = 'multiply';
-    ctx.fillStyle = color;
-    ctx.globalAlpha = intensity * 0.18;
-    ctx.beginPath();
-    ctx.moveTo(upper[0].x * canvas.width, upper[0].y * canvas.height);
-    upper.forEach(p => ctx.lineTo(p.x * canvas.width, p.y * canvas.height));
-    [...lower].reverse().forEach(p => ctx.lineTo(p.x * canvas.width, p.y * canvas.height));
-    ctx.closePath();
-    ctx.filter = 'blur(1px)';
-    ctx.fill();
-    ctx.filter = 'none';
 
-    // 3. Layer 2: Anatomical Vector Hair Strokes
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.strokeStyle = color;
-    ctx.lineCap = 'round';
-    
-    const isRight = upperIdx[0] > 200;
-    
-    // Exact clipping to avoid "over-painting"
+    // ── 1. Clip tightly to the brow polygon ──────────────────────────────────
     ctx.beginPath();
-    ctx.moveTo(upper[0].x * canvas.width, upper[0].y * canvas.height);
-    upper.forEach(p => ctx.lineTo(p.x * canvas.width, p.y * canvas.height));
-    [...lower].reverse().forEach(p => ctx.lineTo(p.x * canvas.width, p.y * canvas.height));
+    ctx.moveTo(upperPx[0].x, upperPx[0].y);
+    upperPx.forEach(p => ctx.lineTo(p.x, p.y));
+    [...lowerPx].reverse().forEach(p => ctx.lineTo(p.x, p.y));
     ctx.closePath();
     ctx.clip();
 
-    // High density sampling
-    const horizontalSlices = 35; 
-    const hairsPerSlice = 8;    
+    // ── 2. Soft feathered base fill ───────────────────────────────────────────
+    // Use a blurred filled polygon as the colour base
+    ctx.save();
+    ctx.filter = `blur(${Math.max(2, faceScale * 3)}px)`;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = `rgba(${r},${g},${b},${Math.min(0.75 * intensity, 0.75)})`;
+    ctx.beginPath();
+    ctx.moveTo(upperPx[0].x, upperPx[0].y);
+    upperPx.forEach(p => ctx.lineTo(p.x, p.y));
+    [...lowerPx].reverse().forEach(p => ctx.lineTo(p.x, p.y));
+    ctx.closePath();
+    ctx.fill();
+    ctx.filter = 'none';
+    ctx.restore();
 
-    for (let h = 0; h < horizontalSlices; h++) {
-      const t_h = h / (horizontalSlices - 1);
-      const spineIdx = Math.floor(t_h * (spine.length - 1));
-      const sub_t = (t_h * (spine.length - 1)) % 1;
-      
-      const p1 = spine[spineIdx];
-      const p2 = spine[spineIdx + 1] || p1;
-      
-      const localX = p1.x * (1 - sub_t) + p2.x * sub_t;
-      const localY = p1.y * (1 - sub_t) + p2.y * sub_t;
-      const localThickness = p1.thickness * (1 - sub_t) + p2.thickness * sub_t;
+    // ── 3. Hair strand engine ─────────────────────────────────────────────────
+    ctx.lineCap = 'round';
+    ctx.globalCompositeOperation = 'source-over';
 
-      const angleAlongSpine = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+    const STRANDS = Math.round(120 * Math.min(intensity + 0.3, 1.0));
 
-      for (let v = 0; v < hairsPerSlice; v++) {
-        // Vertical positioning (within the local thickness)
-        const t_v = (v / (hairsPerSlice - 1) - 0.5) * 2; 
-        const drift = (Math.random() - 0.5) * 0.1; // Random variation
-        const rootOffset = (t_v + drift) * (localThickness * 0.45);
-        
-        const rootX = (localX + Math.cos(angleAlongSpine + Math.PI/2) * rootOffset) * canvas.width;
-        const rootY = (localY + Math.sin(angleAlongSpine + Math.PI/2) * rootOffset) * canvas.height;
+    for (let i = 0; i < STRANDS; i++) {
+      // Random position along the brow (0 = inner/nose, 1 = outer/temple)
+      const t = Math.random();
+      const segF = t * (nPts - 1);
+      const seg  = Math.floor(segF);
+      const frac = segF - seg;
+      const nextSeg = Math.min(seg + 1, nPts - 1);
 
-        let angleOffset;
-        let lengthMod = 1.0;
-        let strokeDensity = 1.0;
+      // Interpolated spine position and metrics
+      const sx = spine[seg].x * (1 - frac) + spine[nextSeg].x * frac;
+      const sy = spine[seg].y * (1 - frac) + spine[nextSeg].y * frac;
+      const sh = spine[seg].h * (1 - frac) + spine[nextSeg].h * frac; // local height
+      const dir = browDir[seg];
 
-        // --- Anatomical Growth Field Logic ---
-        if (t_h < 0.25) { 
-          // INNER HEAD: Hairs grow upward and slightly outwards
-          angleOffset = -Math.PI / 2 + (Math.random() - 0.5) * 0.8;
-          lengthMod = 0.5 + (Math.random() * 0.3);
-          strokeDensity = 0.5; // Softer head
-        } else if (t_h < 0.75) { 
-          // BODY & ARCH: Denser, sweeping hairs following the arch
-          const isTopHalf = t_v > 0;
-          const zipperEffect = isTopHalf ? 0.4 : -0.4; // Hairs meet at spine
-          angleOffset = zipperEffect + (Math.random() - 0.5) * 0.3;
-          lengthMod = 1.2 + (Math.random() * 0.4);
-          strokeDensity = 1.3; // High definition arch
-        } else { 
-          // TAIL: Slanted downward, very sharp and tapered
-          angleOffset = (isRight ? 0.3 : -0.3) + (Math.random() - 0.5) * 0.2;
-          lengthMod = 0.8 + (Math.random() * 0.3);
-          strokeDensity = 1.1;
-        }
+      // Root: random point between upper and lower at this position
+      const vt = (Math.random() - 0.5) * 0.9; // -0.45 … +0.45 of local height
+      const perpX = Math.cos(dir + Math.PI / 2);
+      const perpY = Math.sin(dir + Math.PI / 2);
+      const rootX = sx + perpX * vt * sh + (Math.random() - 0.5) * 1.5;
+      const rootY = sy + perpY * vt * sh + (Math.random() - 0.5) * 1.5;
 
-        const finalAngle = angleAlongSpine + angleOffset;
-        // Stroke length proportional to local brow width
-        const hairLength = (localThickness * 0.6 + Math.random() * localThickness * 0.3) * lengthMod * canvas.height * 1.8;
-        
-        const endX = rootX + Math.cos(finalAngle) * hairLength;
-        const endY = rootY + Math.sin(finalAngle) * hairLength;
-
-        // Visual properties for natural appearance
-        const edgeFade = 1.0 - Math.abs(t_v); // Fade edges for soft transition
-        ctx.beginPath();
-        ctx.globalAlpha = (0.2 + intensity * 0.6) * edgeFade * strokeDensity * (0.8 + Math.random() * 0.4);
-        ctx.lineWidth = (0.4 + intensity * 1.8) * faceScale * strokeDensity * edgeFade * (0.7 + Math.random() * 0.6);
-        
-        ctx.moveTo(rootX, rootY);
-        // Add subtle curvature to individual hairs
-        const cpX = rootX + Math.cos(finalAngle + 0.08) * hairLength * 0.5;
-        const cpY = rootY + Math.sin(finalAngle + 0.08) * hairLength * 0.5;
-        ctx.quadraticCurveTo(cpX, cpY, endX, endY);
-        ctx.stroke();
+      // ── Growth direction: hair grows upward, sweeping toward the temple ──
+      // Inner brow (t≈0): more vertical; outer/arch (t≈0.5): slight sweep; tail (t≈1): downward sweep
+      let baseGrowAngle: number;
+      if (t < 0.3) {
+        // Inner head — strands grow mostly upward, slightly outward
+        baseGrowAngle = isRight
+          ? -Math.PI / 2 + 0.25 * (1 - t / 0.3)
+          : -Math.PI / 2 - 0.25 * (1 - t / 0.3);
+      } else if (t < 0.75) {
+        // Body / arch — strands rise and fan toward temple
+        const arch = (t - 0.3) / 0.45;
+        baseGrowAngle = isRight
+          ? -Math.PI / 2 + 0.15 + arch * 0.25
+          : -Math.PI / 2 - 0.15 - arch * 0.25;
+      } else {
+        // Tail — strands sweep downward toward temple
+        const tail = (t - 0.75) / 0.25;
+        baseGrowAngle = isRight
+          ? -Math.PI / 2 + 0.4 + tail * 0.35
+          : -Math.PI / 2 - 0.4 - tail * 0.35;
       }
+
+      const jitter = (Math.random() - 0.5) * 0.18;
+      const growAngle = baseGrowAngle + jitter;
+
+      // Hair length: 80–150 % of local brow height (stays inside clip region)
+      const hairLen = sh * (0.7 + Math.random() * 0.7);
+
+      const endX = rootX + Math.cos(growAngle) * hairLen;
+      const endY = rootY + Math.sin(growAngle) * hairLen;
+
+      // Slight natural curl via quadratic control point
+      const cpX = rootX + Math.cos(growAngle) * hairLen * 0.5 + (Math.random() - 0.5) * sh * 0.15;
+      const cpY = rootY + Math.sin(growAngle) * hairLen * 0.5 + (Math.random() - 0.5) * sh * 0.08;
+
+      // Fade at brow edges
+      const edgeFade = 1 - Math.pow(Math.abs(t - 0.5) * 2, 1.5);
+
+      ctx.beginPath();
+      ctx.strokeStyle = `rgba(${r},${g},${b},1)`;
+      ctx.lineWidth  = Math.max(0.3, (0.5 + intensity * 1.4) * faceScale * edgeFade * (0.6 + Math.random() * 0.7));
+      ctx.globalAlpha = (0.35 + intensity * 0.55) * edgeFade * (0.75 + Math.random() * 0.25);
+      ctx.moveTo(rootX, rootY);
+      ctx.quadraticCurveTo(cpX, cpY, endX, endY);
+      ctx.stroke();
     }
-    
+
     ctx.restore();
   };
+
 
   const drawMascaraLashes = (
     ctx: CanvasRenderingContext2D, 
@@ -515,81 +534,112 @@ export const VirtualTryOn: React.FC<VirtualTryOnProps> = ({ isCameraOn, product,
           mCtx.clearRect(0, 0, canvas.width, canvas.height);
           hCtx.clearRect(0, 0, canvas.width, canvas.height);
 
-          const leftCheekPath = LEFT_CHEEK_ROI.map(i => l[i]);
-          const rightCheekPath = RIGHT_CHEEK_ROI.map(i => l[i]);
+          // --- Parse hex color into RGB components for alpha-aware gradients ---
+          const hexToRgb = (hex: string) => {
+            const r = parseInt(hex.slice(1,3), 16);
+            const g = parseInt(hex.slice(3,5), 16);
+            const b = parseInt(hex.slice(5,7), 16);
+            return { r, g, b };
+          };
+          const rgb = hexToRgb(color);
+          const colorFull = `rgba(${rgb.r},${rgb.g},${rgb.b},1)`;
+          const colorMid  = `rgba(${rgb.r},${rgb.g},${rgb.b},0.55)`;
+          const colorFade = `rgba(${rgb.r},${rgb.g},${rgb.b},0)`;
 
-          const renderContouredCheek = (appleIdx: number, boneIdx: number, templeIdx: number, path: any[]) => {
-            const apple = l[appleIdx];
-            const bone = l[boneIdx];
-            const temple = l[templeIdx];
-            if (!apple || !bone || !temple) return;
+          // Face scale — used to keep radius proportional regardless of distance from camera
+          const leftEdge  = l[234];
+          const rightEdge = l[454];
+          const faceWidth = leftEdge && rightEdge
+            ? Math.abs(rightEdge.x - leftEdge.x) * canvas.width
+            : canvas.width * 0.5;
+
+          // Blush radius — wide soft ellipse centred on cheek apple
+          const blushRX = faceWidth * 0.30;   // horizontal radius
+          const blushRY = faceWidth * 0.22;   // vertical radius (slightly squashed)
+
+          // Shimmer highlight radius (smaller, sits on cheekbone)
+          const shimmerR = faceWidth * 0.12;
+
+          const renderBlushCheek = (appleIdx: number, boneIdx: number) => {
+            const apple  = l[appleIdx];
+            const bone   = l[boneIdx];
+            if (!apple || !bone) return;
 
             const ax = apple.x * canvas.width;
             const ay = apple.y * canvas.height;
-            const bx = bone.x * canvas.width;
-            const by = bone.y * canvas.height;
-            const tx = temple.x * canvas.width;
-            const ty = temple.y * canvas.height;
-            
-            const sweepGrad = bCtx.createLinearGradient(ax, ay, tx, ty);
-            sweepGrad.addColorStop(0, 'rgba(0,0,0,0)');
-            sweepGrad.addColorStop(0.35, color); 
-            sweepGrad.addColorStop(1, 'rgba(0,0,0,0)');
-            
+            const bx = bone.x  * canvas.width;
+            const by = bone.y  * canvas.height;
+
+            // ── Layer 1: Main blush spot (soft radial on buffer canvas) ──────────
             bCtx.save();
-            bCtx.fillStyle = sweepGrad;
-            drawPolygon(bCtx, path, canvas);
-            bCtx.clip();
-            
-            const radialSpot = bCtx.createRadialGradient(bx, by, 0, bx, by, canvas.width * 0.18);
-            radialSpot.addColorStop(0, color);
-            radialSpot.addColorStop(1, 'rgba(0,0,0,0)');
-            
-            bCtx.globalAlpha = 0.75;
-            bCtx.fillStyle = radialSpot;
+            bCtx.filter = 'blur(18px)';
+            // Draw an ellipse scaled via transform
+            bCtx.translate(ax, ay);
+            bCtx.scale(1, blushRY / blushRX);
+            const mainGrad = bCtx.createRadialGradient(0, 0, 0, 0, 0, blushRX);
+            mainGrad.addColorStop(0,    colorFull);
+            mainGrad.addColorStop(0.45, colorMid);
+            mainGrad.addColorStop(1,    colorFade);
+            bCtx.fillStyle = mainGrad;
+            bCtx.globalAlpha = 0.92;
+            bCtx.beginPath();
+            bCtx.arc(0, 0, blushRX, 0, Math.PI * 2);
             bCtx.fill();
             bCtx.restore();
 
+            // ── Layer 2: Soft mask on mask canvas (feathered circle) ─────────────
             mCtx.save();
-            const maskGrad = mCtx.createRadialGradient(bx, by, 0, bx, by, canvas.width * 0.14);
-            maskGrad.addColorStop(0, 'white');
-            maskGrad.addColorStop(1, 'rgba(255,255,255,0)');
+            mCtx.filter = 'blur(20px)';
+            const maskGrad = mCtx.createRadialGradient(ax, ay, 0, ax, ay, blushRX * 1.1);
+            maskGrad.addColorStop(0,    'rgba(255,255,255,1)');
+            maskGrad.addColorStop(0.6,  'rgba(255,255,255,0.7)');
+            maskGrad.addColorStop(1,    'rgba(255,255,255,0)');
             mCtx.fillStyle = maskGrad;
-            drawPolygon(mCtx, path, canvas);
-            mCtx.clip();
-            mCtx.fillRect(0,0, canvas.width, canvas.height);
+            mCtx.globalAlpha = 1;
+            mCtx.beginPath();
+            mCtx.ellipse(ax, ay, blushRX * 1.05, blushRY * 1.05, 0, 0, Math.PI * 2);
+            mCtx.fill();
             mCtx.restore();
+
+            // ── Layer 3: Shimmer highlight on cheekbone (highlight canvas) ───────
+            hCtx.save();
+            hCtx.filter = 'blur(8px)';
+            const shimGrad = hCtx.createRadialGradient(bx, by, 0, bx, by, shimmerR);
+            shimGrad.addColorStop(0,   'rgba(255,255,255,0.9)');
+            shimGrad.addColorStop(0.5, 'rgba(255,255,255,0.35)');
+            shimGrad.addColorStop(1,   'rgba(255,255,255,0)');
+            hCtx.fillStyle = shimGrad;
+            hCtx.globalAlpha = 0.5;
+            hCtx.beginPath();
+            hCtx.arc(bx, by, shimmerR, 0, Math.PI * 2);
+            hCtx.fill();
+            hCtx.restore();
           };
 
-          renderContouredCheek(LEFT_CHEEK_APPLE, LEFT_CHEEK_BONE, LEFT_TEMPLE, leftCheekPath);
-          renderContouredCheek(RIGHT_CHEEK_APPLE, RIGHT_CHEEK_BONE, RIGHT_TEMPLE, rightCheekPath);
+          renderBlushCheek(LEFT_CHEEK_APPLE,  LEFT_CHEEK_BONE);
+          renderBlushCheek(RIGHT_CHEEK_APPLE, RIGHT_CHEEK_BONE);
 
-          hCtx.drawImage(video, 0, 0);
-          hCtx.globalCompositeOperation = 'multiply';
-          hCtx.fillStyle = '#D0D0D0'; 
-          hCtx.fillRect(0, 0, canvas.width, canvas.height);
-          hCtx.globalCompositeOperation = 'source-atop';
-          hCtx.fillStyle = color; 
-          hCtx.fillRect(0, 0, canvas.width, canvas.height);
-          hCtx.globalCompositeOperation = 'destination-in';
-          hCtx.drawImage(maskCanvas.current, 0, 0);
-
+          // ── Composite onto the main canvas ──────────────────────────────────────
+          // Apply blush buffer with multiply (blends colour into skin realistically)
           ctx.save();
-          ctx.globalCompositeOperation = 'soft-light';
-          ctx.globalAlpha = blushIntensity;
-          ctx.drawImage(bufferCanvas.current, 0, 0);
-          
-          const hShiftX = poseRef.current.yaw * 28; 
-          const hShiftY = poseRef.current.pitch * 16;
-          
-          ctx.globalCompositeOperation = 'screen';
-          ctx.globalAlpha = blushIntensity * 0.7; 
-          ctx.drawImage(highlightCanvas.current, hShiftX, hShiftY);
 
-          ctx.globalCompositeOperation = 'overlay';
-          ctx.globalAlpha = blushIntensity * 0.3;
-          ctx.drawImage(highlightCanvas.current, hShiftX * 1.5, hShiftY * 1.5);
-          
+          // Clip to blush mask so colour never bleeds outside cheek area
+          ctx.globalCompositeOperation = 'multiply';
+          ctx.globalAlpha = Math.min(blushIntensity * 0.95, 0.95);
+          ctx.drawImage(bufferCanvas.current, 0, 0);
+
+          // Colour saturation boost (screen pass adds warmth / vibrancy)
+          ctx.globalCompositeOperation = 'screen';
+          ctx.globalAlpha = blushIntensity * 0.22;
+          ctx.drawImage(bufferCanvas.current, 0, 0);
+
+          // Shimmer / highlight — subtle pearlescent on cheekbone
+          const hShiftX = poseRef.current.yaw   * 18;
+          const hShiftY = poseRef.current.pitch  * 10;
+          ctx.globalCompositeOperation = 'screen';
+          ctx.globalAlpha = blushIntensity * 0.45;
+          ctx.drawImage(hCtx.canvas, hShiftX, hShiftY);
+
           ctx.restore();
         } else if (product.type === ProductType.EYEBROW) {
           drawEyebrowsRefined(ctx, LEFT_BROW_UPPER, LEFT_BROW_LOWER, l, canvas, color, blushIntensity);

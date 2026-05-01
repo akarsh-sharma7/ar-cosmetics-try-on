@@ -1,11 +1,14 @@
 import express from 'express';
 import jwt from 'jsonwebtoken';
+import { OAuth2Client } from 'google-auth-library';
 import User from '../models/User.js';
 
 const router = express.Router();
 
 const JWT_SECRET = process.env.JWT_SECRET || 'ar-cosmetics-secret-key-2024';
 const JWT_EXPIRES_IN = '7d';
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
 // Generate JWT token
 const generateToken = (userId) => {
@@ -229,4 +232,70 @@ router.post('/wishlist', async (req, res) => {
     }
 });
 
-export default router;
+// Google Sign-In — verify Google ID token and upsert user
+router.post('/google', async (req, res) => {
+    try {
+        const { credential } = req.body;
+        if (!credential) {
+            return res.status(400).json({ error: 'Google credential is required' });
+        }
+
+        // Verify the Google ID token
+        let payload;
+        try {
+            const ticket = await googleClient.verifyIdToken({
+                idToken: credential,
+                audience: GOOGLE_CLIENT_ID || undefined,
+            });
+            payload = ticket.getPayload();
+        } catch (verifyErr) {
+            console.error('Google token verification failed:', verifyErr);
+            return res.status(401).json({ error: 'Invalid Google credential' });
+        }
+
+        const { sub: googleId, email, name, picture } = payload;
+
+        if (!email) {
+            return res.status(400).json({ error: 'Google account has no email' });
+        }
+
+        // Upsert: find by googleId or email, create if not found
+        let user = await User.findOne({ $or: [{ googleId }, { email: email.toLowerCase() }] });
+
+        if (!user) {
+            // First-time Google sign-in — create account
+            user = await User.create({
+                email: email.toLowerCase(),
+                googleId,
+                displayName: name || email.split('@')[0],
+                photoURL: picture || '',
+                sessions: [{ loginAt: new Date(), userAgent: req.headers['user-agent'] || 'Unknown' }]
+            });
+        } else {
+            // Link Google ID if signing in with same email for the first time
+            if (!user.googleId) user.googleId = googleId;
+            if (picture && !user.photoURL) user.photoURL = picture;
+            user.sessions.push({ loginAt: new Date(), userAgent: req.headers['user-agent'] || 'Unknown' });
+            if (user.sessions.length > 50) user.sessions = user.sessions.slice(-50);
+            await user.save();
+        }
+
+        const token = generateToken(user._id);
+
+        return res.status(200).json({
+            message: 'Google login successful',
+            token,
+            user: {
+                id: user._id,
+                email: user.email,
+                displayName: user.displayName,
+                photoURL: user.photoURL || null
+            }
+        });
+    } catch (error) {
+        console.error('Google auth error:', error);
+        return res.status(500).json({ error: 'Google authentication failed' });
+    }
+});
+
+export default router;
